@@ -1,7 +1,7 @@
 # `archaeo` - Code and Binary Archaeology
 
 `archaeo` is a CLI tool for extracting information from C/C++ source code and compiled 
-binaries which is useful to conduct complexity and statistical analyse.
+binaries which is useful to conduct complexity and statistical analysis.
 
 > `archaeo` is currently in development and only supports source code
 > at the moment!
