@@ -1,18 +1,24 @@
 use clap::Args;
 use color_eyre::Result;
-use rust_code_analysis::{get_function_spaces, guess_language, read_file_with_eol};
+use rayon::prelude::*;
+use rust_code_analysis::{get_function_spaces, guess_language, read_file};
+use std::fs;
 use std::fs::File;
-use std::path::PathBuf;
-use tracing::{error, info, warn};
+use std::path::{Path, PathBuf};
+use std::process::exit;
+use tracing::{debug, error, info, warn};
 
 use crate::errors::CliError;
 use rust_code_analysis::FuncSpace;
 use serde::{Deserialize, Serialize};
+use walkdir::WalkDir;
 
 #[derive(Args)]
 pub struct SourceCommand {
     #[arg(short, long)]
     path: PathBuf,
+    #[arg(short, long)]
+    output_path: PathBuf,
     #[arg(short, long, default_value = "csv", value_parser = clap::builder::PossibleValuesParser::new(["json", "csv"]))]
     fmt: String,
     #[arg(long, default_value = "false")]
@@ -21,36 +27,80 @@ pub struct SourceCommand {
 
 impl SourceCommand {
     pub fn execute(mut self) -> Result<(), CliError> {
+        let extensions: Vec<String> = vec![
+            "cpp".to_string(),
+            "cc".to_string(),
+            "hpp".to_string(),
+            "c".to_string(),
+            "h".to_string(),
+        ];
+
         if self.no_flatten && self.fmt == "csv" {
             warn!("You have chosen the output format of CSV as well as not flattening. This is not supported \
             and the output format will be swap to JSON");
             self.fmt = "json".to_string();
         }
 
-        info!("Executing source command on file: {}", self.path.display());
+        let mut filepaths = Vec::new();
 
-        let source = if let Some(source) = read_file_with_eol(&self.path)? {
-            source
+        if self.path.is_file() {
+            info!("Single file found...");
+            filepaths.push(self.path.clone());
+        } else if self.path.is_dir() {
+            info!("Multiple files found...");
+            for entry in WalkDir::new(&self.path)
+                .follow_links(true)
+                .into_iter()
+                .filter_map(|e| e.ok())
+            {
+                if entry.file_type().is_file() {
+                    let path = entry.path();
+                    if Self::has_valid_extension(path, &extensions) {
+                        filepaths.push(path.to_path_buf());
+                    }
+                }
+            }
         } else {
-            return Ok(());
-        };
+            error!("The provided path is not a file or a dir. Exiting...");
+            exit(1)
+        }
 
-        let language = if let Some(language) = guess_language(&source, &self.path).0 {
+        if !self.output_path.exists() {
+            info!("The output path does not exist. Creating...");
+            fs::create_dir_all(&self.output_path)?;
+        }
+
+        filepaths
+            .par_iter()
+            .try_for_each(|fp| self.extract_metrics(fp))?;
+
+
+        Ok(())
+    }
+
+    fn extract_metrics(&self, path: &PathBuf) -> Result<(), CliError> {
+        info!("Executing source command on file: {}", path.display());
+
+        let source = read_file(path)
+            .map_err(|_| CliError::FailedProcessing(path.to_string_lossy().to_string()))?;
+
+        let language = if let Some(language) = guess_language(&source, path).0 {
             language
         } else {
-            return Ok(());
+            return Err(CliError::FailedGuessLang(
+                path.to_string_lossy().to_string(),
+            ));
         };
 
-        info!("Source: {:?} bytes Language: {:?}", source.len(), language);
+        debug!("Source: {:?} bytes Language: {:?}", source.len(), language);
 
-        if let Some(space) = get_function_spaces(&language, source.clone(), &self.path, None) {
-            info!("Successfully extracted function metrics");
+        if let Some(space) = get_function_spaces(&language, source.clone(), path, None) {
+            debug!("Successfully extracted function metrics");
 
             // Fix the filepath ending
             let output_path = match self.fmt.as_str() {
-                "csv" => self.path.with_extension("c.csv"),
-                "json" => self.path.with_extension("c.json"),
-
+                "csv" => path.with_extension("csv"),
+                "json" => path.with_extension("json"),
                 _ => {
                     unreachable!("Invalid format")
                 }
@@ -58,6 +108,7 @@ impl SourceCommand {
 
             // Remove any additional parent dirs etc
             let output_path = output_path.file_name().unwrap().to_str().unwrap();
+            let output_path = self.output_path.clone().join(output_path);
 
             if self.no_flatten {
                 match self.fmt.as_str() {
@@ -66,7 +117,7 @@ impl SourceCommand {
                     }
                     "json" => {
                         serde_json::to_writer_pretty(File::create(output_path).unwrap(), &space)?;
-                        info!("All saved to JSON")
+                        debug!("All saved to JSON")
                     }
                     _ => {}
                 }
@@ -75,7 +126,7 @@ impl SourceCommand {
 
                 flatten_spaces(
                     &space.spaces,
-                    &Some(self.path.to_string_lossy().to_string()),
+                    &Some(path.to_string_lossy().to_string()),
                     &mut flattened,
                 );
 
@@ -88,11 +139,11 @@ impl SourceCommand {
                         }
 
                         writer.flush()?;
-                        info!("All saved to CSV")
+                        debug!("All saved to CSV")
                     }
                     "json" => {
                         serde_json::to_writer_pretty(File::create(output_path).unwrap(), &space)?;
-                        info!("All saved to JSON")
+                        debug!("All saved to JSON")
                     }
                     _ => {
                         unreachable!("Invalid format provided.")
@@ -106,6 +157,18 @@ impl SourceCommand {
                 "Failed to extract function metrics".to_string(),
             ))
         }
+    }
+
+    // Helper function to check file extensions
+    fn has_valid_extension(path: &Path, extensions: &[String]) -> bool {
+        if let Some(extension) = path.extension() {
+            if let Some(ext_str) = extension.to_str() {
+                return extensions
+                    .iter()
+                    .any(|valid_ext| ext_str.eq_ignore_ascii_case(valid_ext));
+            }
+        }
+        false
     }
 }
 
@@ -282,7 +345,7 @@ fn flatten_spaces(
     for space in spaces {
         flattened.push(FlattenedMetrics::from_space(
             space,
-            Some(space.name.clone().unwrap()),
+            Some(space.name.clone().unwrap_or("no_name_found".to_string())),
             Some(source_name.clone().unwrap()),
         ));
 

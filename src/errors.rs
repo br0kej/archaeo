@@ -2,14 +2,17 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum CliError {
-    #[error("Failed to process: {0}")]
+    #[error("FailedProcessingError: Failed to process: {0}")]
     FailedProcessing(String),
+
+    #[error("Failed to guess programming lang of {0}")]
+    FailedGuessLang(String),
 
     #[error("Failed to create JSON: {0}")]
     SerdeError(serde_json::Error),
 
     #[error("Failed to create file: {0}")]
-    FileError(std::io::Error),
+    FileCreationError(std::io::Error),
 
     #[error("Failed to create CSV: {0}")]
     CSVError(csv::Error),
@@ -26,7 +29,7 @@ impl From<serde_json::Error> for CliError {
 
 impl From<std::io::Error> for CliError {
     fn from(err: std::io::Error) -> CliError {
-        CliError::FileError(err)
+        CliError::FileCreationError(err)
     }
 }
 
