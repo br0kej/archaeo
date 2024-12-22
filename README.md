@@ -16,17 +16,22 @@ cargo install --git https://github.com:br0kej/archaeo.git
 
 ### Extract source code metrics from `dummy.cpp` and save to CSV
 ```bash
-archaeo source --path test-data/dummy.cpp 
+archaeo source --path test-data/dummy.cpp -o .
 ```
 
 ### Extract source code metrics from `test.c` and save to JSON 
 ```bash
-archaeo source --path test-data/test.c --fmt json 
+archaeo source --path test-data/test.c --fmt json -o .
+```
+
+### Extract source code metrics for `test-data` directory, save to CSV and output into `my-test-dir`
+```bash
+archaeo source --path test-data/ -o my-test-dir
 ```
 
 ## Planned Features
 
-- [ ] Multi-file/Project level extraction of source code features
+- [x] Multi-file/Project level extraction of source code features
 - [ ] Support for extracting source code line information from DWARF and PDB
 - [ ] Support for merging source code metrics with those extracted from compiled binaries
 - [ ] Support merging of source code metrics and corresponding decompiled code metrics
