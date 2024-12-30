@@ -86,7 +86,7 @@ dependencies = [
 
 [[package]]
 name = "archaeo"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "archaeo_macros",
  "clap",
