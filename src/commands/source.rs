@@ -182,7 +182,20 @@ impl SourceCommand {
                         debug!("All saved to CSV")
                     }
                     "json" => {
-                        serde_json::to_writer_pretty(File::create(output_path).unwrap(), &space)?;
+                        match &flattened {
+                            MetricsType::Extended(metrics) => {
+                                serde_json::to_writer_pretty(
+                                    File::create(output_path).unwrap(),
+                                    &metrics,
+                                )?;
+                            }
+                            MetricsType::Regular(metrics) => {
+                                serde_json::to_writer_pretty(
+                                    File::create(output_path).unwrap(),
+                                    &metrics,
+                                )?;
+                            }
+                        }
                         debug!("All saved to JSON")
                     }
                     _ => {
