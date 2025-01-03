@@ -58,7 +58,9 @@ impl SourceCommand {
             {
                 if entry.file_type().is_file() {
                     let path = entry.path();
-                    if Self::has_valid_extension(path, &extensions) {
+                    if Self::has_valid_extension(path, &extensions)
+                        && path.to_str().map_or(false, |p| !p.contains("test/"))
+                    {
                         filepaths.push(path.to_path_buf());
                     }
                 }
