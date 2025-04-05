@@ -16,18 +16,36 @@ use walkdir::WalkDir;
 
 #[derive(Args)]
 pub struct SourceCommand {
-    #[arg(short, long)]
+    /// Path to the source code to be processed
+    #[arg(short, long, required = true)]
     path: PathBuf,
-    #[arg(short, long)]
+
+    /// Path to save generated outputs to
+    #[arg(short, long, required = true)]
     output_path: PathBuf,
+
+    /// Base directory for organizing outputs by matching subdirectories.
+    /// When provided, subdirectories under this path will be preserved in the output structure
+    #[arg(short, long)]
+    base_dir: Option<String>,
+
+    /// Output format for the processed data
+    /// Options: json, csv
     #[arg(short, long, default_value = "csv", value_parser = clap::builder::PossibleValuesParser::new(["json", "csv"]))]
     fmt: String,
+
+    /// Preserve nested structure in output instead of flattening.
+    /// When false (default), all results will be combined into a single output file
     #[arg(long, default_value = "false")]
     no_flatten: bool,
+
+    /// Enable extended analysis with additional metrics and information.
+    /// When true, generates more comprehensive output with detailed analysis
     #[arg(long, default_value = "false")]
     extended: bool,
 }
 
+// Implementation for the base_dir functionality
 impl SourceCommand {
     pub fn execute(mut self) -> Result<(), CliError> {
         let extensions: Vec<String> = vec![
@@ -102,25 +120,32 @@ impl SourceCommand {
             debug!("Successfully extracted function metrics");
 
             // Fix the filepath ending
-            let output_path = match self.fmt.as_str() {
-                "csv" if self.extended => path.with_file_name(format!(
+            let output_filename = match self.fmt.as_str() {
+                "csv" if self.extended => format!(
                     "{}-extended.csv",
                     path.file_stem().unwrap().to_string_lossy()
-                )),
-                "json" if self.extended => path.with_file_name(format!(
+                ),
+                "json" if self.extended => format!(
                     "{}-extended.json",
                     path.file_stem().unwrap().to_string_lossy()
-                )),
-                "csv" => path.with_extension("csv"),
-                "json" => path.with_extension("json"),
+                ),
+                "csv" => format!("{}.csv", path.file_stem().unwrap().to_string_lossy()),
+                "json" => format!("{}.json", path.file_stem().unwrap().to_string_lossy()),
                 _ => {
                     unreachable!("Invalid format")
                 }
             };
 
-            // Remove any additional parent dirs etc
-            let output_path = output_path.file_name().unwrap().to_str().unwrap();
-            let output_path = self.output_path.clone().join(output_path);
+            // Determine output path with proper directory structure
+            let output_path = self.determine_output_path(path, &output_filename)?;
+
+            // Ensure the parent directory exists
+            if let Some(parent) = output_path.parent() {
+                if !parent.exists() {
+                    fs::create_dir_all(parent)?;
+                    debug!("Created output directory: {}", parent.display());
+                }
+            }
 
             if self.no_flatten {
                 match self.fmt.as_str() {
@@ -128,8 +153,8 @@ impl SourceCommand {
                         error!("Not possible!")
                     }
                     "json" => {
-                        serde_json::to_writer_pretty(File::create(output_path).unwrap(), &space)?;
-                        debug!("All saved to JSON")
+                        serde_json::to_writer_pretty(File::create(&output_path).unwrap(), &space)?;
+                        debug!("All saved to JSON at {:?}", output_path.display())
                     }
                     _ => {}
                 }
@@ -166,7 +191,7 @@ impl SourceCommand {
 
                 match self.fmt.as_str() {
                     "csv" => {
-                        let file = File::create(output_path)?;
+                        let file = File::create(&output_path)?;
                         let mut writer = csv::Writer::from_writer(file);
                         match &flattened {
                             MetricsType::Extended(metrics) => {
@@ -181,24 +206,24 @@ impl SourceCommand {
                             }
                         }
                         writer.flush()?;
-                        debug!("All saved to CSV")
+                        debug!("All saved to CSV at {}", output_path.display())
                     }
                     "json" => {
                         match &flattened {
                             MetricsType::Extended(metrics) => {
                                 serde_json::to_writer_pretty(
-                                    File::create(output_path).unwrap(),
+                                    File::create(&output_path).unwrap(),
                                     &metrics,
                                 )?;
                             }
                             MetricsType::Regular(metrics) => {
                                 serde_json::to_writer_pretty(
-                                    File::create(output_path).unwrap(),
+                                    File::create(&output_path).unwrap(),
                                     &metrics,
                                 )?;
                             }
                         }
-                        debug!("All saved to JSON")
+                        debug!("All saved to JSON at {}", output_path.display())
                     }
                     _ => {
                         unreachable!("Invalid format provided.")
@@ -210,6 +235,50 @@ impl SourceCommand {
         } else {
             error!("Failed to process: {}", path.display());
             Ok(())
+        }
+    }
+
+    fn determine_output_path(
+        &self,
+        input_path: &PathBuf,
+        output_filename: &str,
+    ) -> Result<PathBuf, CliError> {
+        if self.base_dir.is_none() {
+            return Ok(self.output_path.join(output_filename));
+        }
+
+        let base_dir = PathBuf::from(self.base_dir.as_ref().unwrap());
+
+        let input_str = input_path.to_string_lossy().to_string();
+        let base_str = base_dir.to_string_lossy().to_string();
+
+        if !input_str.starts_with(&base_str) {
+            debug!(
+                "File {} is not under base_dir {}, using root output directory",
+                input_path.display(),
+                base_dir.display()
+            );
+            return Ok(self.output_path.join(output_filename));
+        }
+
+        let relative_path = input_path.strip_prefix(&base_dir).map_err(|_| {
+            CliError::FailedProcessing(format!(
+                "Failed to strip prefix from path: {}",
+                input_path.display()
+            ))
+        })?;
+
+        let top_level_dir = relative_path
+            .components()
+            .next()
+            .map(|c| c.as_os_str().to_string_lossy().to_string());
+
+        if let Some(dir) = top_level_dir {
+            let sub_output_path = self.output_path.join(dir);
+
+            Ok(sub_output_path.join(output_filename))
+        } else {
+            Ok(self.output_path.join(output_filename))
         }
     }
 
